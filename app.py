@@ -320,7 +320,7 @@ with tab_live:
 # ==========================================
 with tab_archive:
     st.subheader("📜 Анализ натурных данных `.npy` во время землетрясения в Алматы (Январь 2024)")
-    folder_path = r"C:\IonoSeis-Kazakhstan\processed_data_Almaty"
+    folder_path = r"C:\ionosphere-vtec-app\processed_data_Almaty"
 
     if os.path.exists(folder_path):
         files = sorted([f for f in os.listdir(folder_path) if f.endswith('.npy')])
