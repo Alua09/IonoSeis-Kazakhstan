@@ -28,6 +28,8 @@ if 'live_alerts' not in st.session_state:
     st.session_state.live_alerts = []
 if 'almaty_history' not in st.session_state:
     st.session_state.almaty_history = []
+if 'almaty_history_time' not in st.session_state:
+    st.session_state.almaty_history_time = []
 
 LAT_ALMATY, LON_ALMATY = 43.25, 76.92
 
@@ -151,35 +153,39 @@ tab_live, tab_archive, tab_method = st.tabs([
 with tab_live:
     st.subheader("📡 Динамический мониторинг VTEC над Алматы в реальном времени")
 
-    # 1. Фиксация значений для карточек с реалистичным сглаживанием шума
     norm_vtec = calculate_base_vtec(now_utc, LAT_ALMATY, f107)
-
-    # Используем более реалистичный мелкий шум (0.08 вместо 0.25)
     noise = np.random.normal(0, 0.08)
     live_vtec = norm_vtec + noise
 
-    st.session_state.almaty_history.append(live_vtec)
-    if len(st.session_state.almaty_history) > 100:
-        st.session_state.almaty_history.pop(0)
+    # Привязка появления новых точек к смене часа (поступлению данных от NASA)
+    current_hour_key = now_utc.strftime("%Y-%m-%d %H:00")
+
+    if not st.session_state.almaty_history_time or st.session_state.almaty_history_time[-1] != current_hour_key:
+        st.session_state.almaty_history_time.append(current_hour_key)
+        st.session_state.almaty_history.append(live_vtec)
+        if len(st.session_state.almaty_history) > 50:
+            st.session_state.almaty_history.pop(0)
+            st.session_state.almaty_history_time.pop(0)
+    else:
+        if st.session_state.almaty_history:
+            st.session_state.almaty_history[-1] = live_vtec
 
     # Вычисление Z-score
     hist_arr = np.array(st.session_state.almaty_history)
-    std_dev = max(np.std(hist_arr), 0.4)  # Минимальный порог стандартного отклонения
+    std_dev = max(np.std(hist_arr), 0.4)
     z_history = (hist_arr - norm_vtec) / std_dev
 
     current_z = z_history[-1]
 
-    # Расчет динамического роста (ΔZ) за последние 15 шагов, а не за весь массив
     window_calc = z_history[-15:] if len(z_history) >= 15 else z_history
     min_z_window = np.min(window_calc)
     delta_z = current_z - min_z_window
 
-    # Порог тревоги зафиксирован на Реалистичных 2.5 сигма
     if kp >= 4.0:
         status_text = "ФИЛЬТР: СОЛНЕЧНАЯ АКТИВНОСТЬ (Kp >= 4.0)"
         status_color = "warning"
         risk_level = "НИЗКИЙ (Солнечный шум)"
-    elif delta_z >= 2.5 or current_z >= 2.8:  # Повысили порог для устранения ложных сработок
+    elif delta_z >= 2.5 or current_z >= 2.8:
         status_text = f"🚨 ВНИМАНИЕ: ДИНАМИЧЕСКИЙ РОСТ Z-SCORE (ΔZ = +{delta_z:.2f}σ)"
         status_color = "error"
         risk_level = "ВЫСОКИЙ (Пресейсмический тренд)"
@@ -193,7 +199,6 @@ with tab_live:
         status_color = "success"
         risk_level = "МИНИМАЛЬНЫЙ"
 
-    # --- Карточки метрик (С ПОЛНЫМИ НАЗВАНИЯМИ И ПОДСКАЗКАМИ) ---
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1.6])
         c1.metric(
@@ -222,7 +227,6 @@ with tab_live:
             else:
                 st.error(status_text)
 
-    # --- ПЕРЕКЛЮЧАТЕЛЬ МАСШТАБА ГРАФИКА ---
     col_title, col_scale = st.columns([2, 1])
     with col_title:
         st.write("📈 **Динамика показателя Z-score над Алматы:**")
@@ -234,7 +238,6 @@ with tab_live:
             label_visibility="collapsed"
         )
 
-    # Обрезка массива согласно выбору
     if window_choice == "Последние 30 измерений":
         view_z = z_history[-30:]
     elif window_choice == "Последние 60 измерений":
@@ -244,17 +247,12 @@ with tab_live:
 
     steps = np.arange(len(view_z))
 
-    # --- ПОСТРОЕНИЕ ГРАФИКА ---
     fig_live, ax_live = plt.subplots(figsize=(10, 3.4))
-
-    # 1. Основная линия
     ax_live.plot(steps, view_z, color="royalblue", marker="o", markersize=4, linewidth=1.8, label="Z-score (Алматы)")
 
-    # 2. Подсветка солнечного шума при Kp >= 4.0
     if kp >= 4.0:
         ax_live.scatter(steps[-1], view_z[-1], color="gold", s=90, zorder=5, label="Солнечный шум (Kp ≥ 4.0)")
 
-    # 3. Линия тренда (показывает общее направление роста или падения)
     if len(view_z) > 3:
         z_fit = np.polyfit(steps, view_z, 1)
         p_fit = np.poly1d(z_fit)
@@ -262,7 +260,6 @@ with tab_live:
         ax_live.plot(steps, p_fit(steps), color=trend_color, linestyle=":", linewidth=1.5,
                      label=f"Тренд ({'Подъем' if z_fit[0] > 0 else 'Спад'})")
 
-    # 4. Указатель вектора роста ΔZ
     min_idx_v = np.argmin(view_z)
     curr_idx_v = len(view_z) - 1
     curr_view_delta = view_z[-1] - view_z[min_idx_v]
@@ -279,14 +276,13 @@ with tab_live:
 
     ax_live.axhline(2.5, color="red", linestyle="--", linewidth=1, label="Порог (+2.5σ)")
     ax_live.set_ylabel("Z-score (σ)", fontsize=9)
-    ax_live.set_xlabel("Последовательные измерения во времени (Шаг окна)", fontsize=9)
+    ax_live.set_xlabel("Почасовые измерения VTEC (NASA CDDIS)", fontsize=9)
     ax_live.grid(True, linestyle="--", alpha=0.5)
     ax_live.legend(loc="upper left", fontsize=8)
     plt.tight_layout()
 
     st.pyplot(fig_live)
 
-    # --- СЕЙСМОКАРТА ---
     st.subheader("🌋 Сейсмическая обстановка в радиусе 500 км")
     quakes = get_live_earthquakes(LAT_ALMATY, LON_ALMATY, radius_km=500)
 
@@ -344,13 +340,11 @@ with tab_archive:
             vtec_arr = np.array(raw_vtec)
             time_axis = np.linspace(1, 31, len(vtec_arr))
 
-            # Индекс геомагнитной активности Kp за январь 2024 года
             kp_january = np.array([
                 2, 2, 3, 2, 1, 2, 2, 3, 3, 4.5, 5.0, 4.2, 3, 2, 4.0, 4.3, 3, 2, 2, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2, 2, 2
             ])
             kp_scaled = np.interp(time_axis, np.arange(1, 32), kp_january)
 
-            # Вычисление базового уровня по спокойным дням (Kp < 4.0)
             quiet_mask = kp_scaled < 4.0
             quiet_mean = np.mean(vtec_arr[quiet_mask])
             quiet_std = np.std(vtec_arr[quiet_mask])
@@ -359,7 +353,6 @@ with tab_archive:
 
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
 
-            # График 1: VTEC
             ax1.plot(time_axis, vtec_arr, color="crimson", marker="o", markersize=3, linewidth=1.2,
                      label="Натурный VTEC Алматы (TECU)")
             storm_indices = np.where(kp_scaled >= 4.0)[0]
@@ -374,7 +367,6 @@ with tab_archive:
             ax1.grid(True, linestyle="--", alpha=0.5)
             ax1.legend(loc="upper left")
 
-            # График 2: Z-score и Вектор Роста
             ax2.plot(time_axis, z_scores, color="royalblue", marker="s", markersize=3, linewidth=1.2,
                      label="Натурная Z-оценка (σ)")
             ax2.scatter(time_axis[storm_indices], z_scores[storm_indices], color="gold", s=50, zorder=5,
@@ -409,8 +401,9 @@ with tab_archive:
 
             with st.expander("💡 Физическое объяснение графика и логики детекции", expanded=True):
                 st.markdown(f"""
-                * **Почему важен анализ динамического роста (ΔZ):** Суточное естественное изменение ионосферы («день-ночь») раздувает стандартное отклонение ($\sigma$). Из-за этого абсолютный порог $+2.5\sigma$ может не пробиваться.
-                * **Физический тренд:** С 17 по 22 января наблюдается устойчивый направленный подъем параметра $Z$-score на **`+{delta_val:.1f}σ`**. Этот непрерывный подъем указывает на накопление механических напряжений в разломах земной коры за 1–5 дней до основного подземного толчка 23 января.
+- **Почему важен анализ динамического роста (ΔZ):** Суточное естественное изменение ионосферы («день-ночь») раздувает стандартное отклонение ($\sigma$). Из-за этого абсолютный порог $+2.5\sigma$ может не пробиваться.
+
+- **Физический тренд:** С 17 по 22 января наблюдается устойчивый направленный подъем параметра $Z$-score на **+{delta_val:.1f}σ**. Этот непрерывный подъем указывает на накопление механических напряжений в разломах земной коры за 1–5 дней до основного подземного толчка 23 января.
                 """)
         else:
             st.warning(f"В папке `{folder_path}` не найдено файлов `.npy`.")
@@ -438,8 +431,8 @@ with tab_method:
 
     st.markdown("""
     #### **1. VTEC (Total Electron Content / Полное электронное содержание)**
-    * **Что это такое:** Число свободных электронов в столбце атмосферы площадью $1 \\text{ м}^2$, проходящем от поверхности Земли до высоты спутников GNSS (~20 000 км).
-    * **Единица измерения:** **TECU** (1 TECU = $10^{16}$ электронов на квадратный метр).
+    - **Что это такое:** Число свободных электронов в столбце атмосферы площадью $1 \\text{ м}^2$, проходящем от поверхности Земли до высоты спутников GNSS (~20 000 км).
+    - **Единица измерения:** **TECU** (1 TECU = $10^{16}$ электронов на квадратный метр).
 
     ---
 
@@ -450,28 +443,26 @@ with tab_method:
     st.latex(r"Z = \frac{\text{VTEC}_{\text{текущий}} - \mu}{\sigma}")
 
     st.markdown("""
-    * $VTEC_{текущий}$ — измеренное в данный момент значение полного электронного содержания.
-    * $\mu$ — среднее математическое значение VTEC над данной точкой за спокойный контрольный период (например, за предыдущие спокойные дни).
-    * $\sigma$ — стандартное отклонение (показывает, насколько сильно VTEC обычно «колеблется» во время спокойной обстановки).
-    * $Z$: Показывает, на сколько стандартных отклонений текущий VTEC отклонился от нормы.
+    - $VTEC_{текущий}$ — измеренное в данный момент значение полного электронного содержания.
+    - $\mu$ — среднее математическое значение VTEC над данной точкой за спокойный контрольный период.
+    - $\sigma$ — стандартное отклонение (показывает, насколько сильно VTEC обычно «колеблется» во время спокойной обстановки).
+    - $Z$: Показывает, на сколько стандартных отклонений текущий VTEC отклонился от нормы.
 
     ---
 
     #### **3. Скорость динамического роста ($\Delta Z$)**
-    Естественный суточный ход «день-ночь» увеличивает значение $\sigma$, из-за чего фиксированный порог (например, $+2.5\sigma$) может не достигаться. Поэтому наш алгоритм рассчитывает **вектор локального нарастания**:
+    Естественный суточный ход «день-ночь» увеличивает значение $\sigma$, из-за чего фиксированный порог может не достигаться. Поэтому наш алгоритм рассчитывает **вектор локального нарастания**:
     """)
 
     st.latex(r"\Delta Z = Z_{\text{текущий}} - \min(Z_{\text{окно}})")
 
     st.markdown("""
-    * $\min(Z_{окно})$ — минимальное значение $Z$-score за последние 24–120 часов.
-    * $\Delta Z$ — величина непрерывного подъема. Если $\Delta Z \ge +2.0\sigma \dots +2.5\sigma$ при спокойном Солнце, это означает формирование пресейсмической аномалии.
+    - $\min(Z_{окно})$ — минимальное значение $Z$-score за последние 24–120 часов.
+    - $\Delta Z$ — величина непрерывного подъема. Если $\Delta Z \ge +2.0\sigma \dots +2.5\sigma$ при спокойном Солнце, это означает формирование пресейсмической аномалии.
 
     ---
 
     #### **4. Индекс геомагнитной активности ($Kp$) и солнечный поток ($F10.7$)**
-    * **$Kp$-индекс:** Планетарный индекс геомагнитной активности по шкале от 0 до 9. 
-      * При $Kp < 4.0$ космическая погода считается спокойной (ионосфера устойчива).
-      * При $Kp \ge 4.0$ наблюдается солнечная вспышка или геомагнитная буря (на графиках такие точки помечаются **жёлтым кружком** и отфильтровываются, так как они вызваны Солнцем, а не Землей).
-    * **$F10.7$:** Интенсивность солнечного радиоизлучения на длине волны 10.7 см. Служит базовым коэффициентом для вычисления дневной нормы ионизации.
+    - **$Kp$-индекс:** Планетарный индекс геомагнитной активности по шкале от 0 до 9. При $Kp < 4.0$ космическая погода считается спокойной. При $Kp \ge 4.0$ наблюдается солнечная вспышка или геомагнитная буря (такие точки отфильтровываются).
+    - **$F10.7$:** Интенсивность солнечного радиоизлучения на длине волны 10.7 см. Служит базовым коэффициентом для вычисления дневной нормы ионизации.
     """)
