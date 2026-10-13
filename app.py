@@ -8,9 +8,13 @@ import pydeck as pdk
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timezone, timedelta
+from streamlit_autorefresh import st_autorefresh
 
 # --- КОНФИГУРАЦИЯ СТРАНИЦЫ ---
 st.set_page_config(layout="wide", page_title="IonoSeis AI: Алматы Monitor", page_icon="🛰️")
+
+# Автоматическое обновление страницы каждые 60 секунд (60000 миллисекунд)
+count = st_autorefresh(interval=60000, limit=None, key="auto_reload")
 
 st.markdown("""
     <style>
